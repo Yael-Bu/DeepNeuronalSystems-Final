@@ -1,0 +1,6 @@
+train: ../DataSet/train/images
+val: ../DataSet/train/images
+test: ../DataSet/test
+
+nc: 1
+names: ["scroll"]
