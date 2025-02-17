@@ -5,7 +5,6 @@ import cv2
 import numpy as np
 import pandas as pd
 from ultralytics import YOLO
-from sklearn.model_selection import train_test_split
 
 
 class YOLOModel:
@@ -18,10 +17,13 @@ class YOLOModel:
         self.model_path = model_path
         self.trained_model_dir = trained_model_dir
         self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
+        self.last_model_path = os.path.join(trained_model_dir, "last.pt")
 
-        # Load the best trained model if it exists; otherwise, load the pre-trained model
-        if os.path.exists(self.trained_model_path):
-            print(f"Loading trained model from {self.trained_model_path}")
+        if os.path.exists(self.last_model_path):
+            print(f"Loading last trained model from {self.last_model_path}")
+            self.model = YOLO(self.last_model_path)
+        elif os.path.exists(self.trained_model_path):
+            print(f"Loading best trained model from {self.trained_model_path}")
             self.model = YOLO(self.trained_model_path)
         else:
             print(f"Loading pre-trained model from {self.model_path}")
@@ -37,14 +39,10 @@ class YOLOModel:
 
         for filename in os.listdir(json_folder):
             if filename.endswith(".json"):
-                json_path = os.path.join(json_folder, filename)
-                with open(json_path, 'r') as f:
+                with open(os.path.join(json_folder, filename), 'r') as f:
                     data = json.load(f)
-
-                img_w, img_h = data["imageWidth"], data["imageHeight"]  # Get image dimensions
-                cleaned_filename = filename.replace(".json", ".txt")
-                txt_filename = os.path.join(output_folder, cleaned_filename)
-
+                img_w, img_h = data["imageWidth"], data["imageHeight"]
+                txt_filename = os.path.join(output_folder, filename.replace(".json", ".txt"))
                 with open(txt_filename, "w") as txt_file:
                     for shape in data["shapes"]:
                         label = 0  # Default class ID
@@ -62,7 +60,7 @@ class YOLOModel:
                         # Write to file with 6 decimal places
                         txt_file.write(f"{label} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
 
-    def train_yolo(self, data_yaml="data.yaml", epochs=100, batch_size=10, img_size=640, cache="disk", resume=True):
+    def train_yolo(self, data_yaml="data.yaml", epochs=100, batch_size=10, img_size=800, cache="disk", resume=True):
         """
         Trains the YOLO model using the specified dataset.
         :param data_yaml: Path to the dataset configuration file.
@@ -72,10 +70,9 @@ class YOLOModel:
         :param cache: Caching strategy ('ram', 'disk', or False).
         :param resume: Whether to resume training from the last checkpoint.
         """
-        last_model_path = os.path.join(self.trained_model_dir, "last.pt")
-        if resume and os.path.exists(last_model_path):
-            print(f"Resuming training from {last_model_path}")
-            self.model = YOLO(last_model_path)  # Load last trained model
+        if resume and os.path.exists(self.last_model_path):
+            print("Resuming training...")
+            self.model = YOLO(self.last_model_path)
 
         self.model.train(
             data=data_yaml,
@@ -85,25 +82,36 @@ class YOLOModel:
             cache=cache,
             resume=resume
         )
+        print(f"Training complete. Best model saved at: {self.trained_model_path}")
 
-        # Update trained model path after training
+        # Compare models and keep the best one
         if os.path.exists(self.trained_model_path):
-            print(f"Training complete. Best model saved at: {self.trained_model_path}")
-        else:
-            print("Warning: Best model was not found after training!")
+            if os.path.exists(self.last_model_path):
+                best_model = YOLO(self.trained_model_path)
+                last_model = YOLO(self.last_model_path)
+                best_mAP = best_model.val()["metrics/mAP50-95(B)"]
+                last_mAP = last_model.val()["metrics/mAP50-95(B)"]
+                if best_mAP > last_mAP:
+                    os.rename(self.trained_model_path, self.last_model_path)
+                    print("Updated last.pt with better model.")
+                else:
+                    print("Keeping previous last.pt as it has better performance.")
+            else:
+                os.rename(self.trained_model_path, self.last_model_path)
+                print("Saved best model as last.pt")
 
-    def predict_process_bounding_boxes(self, image_path: str, output_csv: str) -> None:
+    def predict_process_bounding_boxes(self, image_path: str, output_csv: str, conf_threshold=0.4, iou_threshold=0.5, use_tta=True):
         """
-        Runs inference on an image and processes bounding boxes into a CSV file.
-        :param image_path: Path to the image file.
-        :param output_csv: Path to save the results in CSV format.
-        """
-        if not os.path.exists(self.trained_model_path):
-            raise FileNotFoundError(f"Trained model not found at {self.trained_model_path}. Train the model first.")
+         Runs inference on an image and processes bounding boxes into a CSV file.
+         :param image_path: Path to the image file.
+         :param output_csv: Path to save the results in CSV format.
+         """
+        if not os.path.exists(self.last_model_path):
+            raise FileNotFoundError("Train the model first!")
 
-        model = YOLO(self.trained_model_path)  # Load the trained model
-        img = cv2.imread(image_path)  # Read the image
-        results = model.predict(img, save=True, conf=0.5)  # Perform object detection
+        model = YOLO(self.last_model_path)
+        img = cv2.imread(image_path) # Read the image
+        results = model.predict(img, save=True, conf=conf_threshold, iou=iou_threshold, augment=use_tta)
 
         data = []
         for result in results:
@@ -118,7 +126,16 @@ class YOLOModel:
 
         df = pd.DataFrame(data, columns=["image_name", "scroll_number", "xmin", "ymin", "xmax", "ymax", "iou"])
         os.makedirs(os.path.dirname(output_csv), exist_ok=True)  # Ensure output folder exists
-        df.to_csv(output_csv, index=False)  # Save results to CSV
+        df.to_csv(output_csv, index=False) # Save results to CSV
+
+    def optimize_model(self, quantize=False, convert_trt=False):
+        """Optimizes the model for faster inference."""
+        if quantize:
+            print("Applying INT8 quantization...")
+            self.model.export(format='onnx', int8=True)
+        if convert_trt:
+            print("Converting to TensorRT...")
+            self.model.export(format='engine')
 
 
 if __name__ == "__main__":
@@ -126,21 +143,14 @@ if __name__ == "__main__":
     Main script execution: converts annotations, trains YOLO, and runs predictions on test images.
     """
     yolo_model = YOLOModel()
-
-    # Convert dataset from LabelMe to YOLO format
-    # yolo_model.convert_labelme_to_yolo("DataSet/train", "DataSet/train/labels")
-
-    # Train the YOLO model with caching enabled
-    yolo_model.train_yolo()
-
-    # Run predictions on test images
+    yolo_model.train_yolo(resume=False)
     test_dir = "DataSet/test"
     results_dir = "DataSet/test/results"
     os.makedirs(results_dir, exist_ok=True)
-
     for test_image in os.listdir(test_dir):
         if test_image.endswith(".jpg"):
             yolo_model.predict_process_bounding_boxes(
                 os.path.join(test_dir, test_image),
-                os.path.join(results_dir, f"{test_image}.csv")
+                os.path.join(results_dir, f"{test_image}.csv"),
+                conf_threshold=0.35, iou_threshold=0.45  # Adjusted thresholds
             )
