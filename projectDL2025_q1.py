@@ -5,7 +5,34 @@ import cv2
 import numpy as np
 import pandas as pd
 from ultralytics import YOLO
+from sklearn.model_selection import KFold
 
+# EarlyStopping class
+class EarlyStopping:
+    def __init__(self, patience=5, min_delta=0, metric='loss'):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_metric = -float('inf') if metric != 'loss' else float('inf')
+        self.counter = 0
+        self.early_stop = False
+        self.metric = metric  # metric could be 'loss', 'mAP', 'F1', etc.
+
+    def __call__(self, val_metric):
+        if self.metric == 'loss':
+            if val_metric < self.best_metric - self.min_delta:
+                self.best_metric = val_metric
+                self.counter = 0
+            else:
+                self.counter += 1
+        else:  # mAP, F1 or others
+            if val_metric > self.best_metric + self.min_delta:
+                self.best_metric = val_metric
+                self.counter = 0
+            else:
+                self.counter += 1
+
+        if self.counter >= self.patience:
+            self.early_stop = True
 
 class YOLOModel:
     def __init__(self, model_path="yolov11n.pt", trained_model_dir="runs/detect/train11/weights"):
@@ -19,6 +46,7 @@ class YOLOModel:
         self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
         self.last_model_path = os.path.join(trained_model_dir, "last.pt")
 
+        # בודק אם קיימת ההרצה האחרונה ולוקח את המשקלים ממנה
         if os.path.exists(self.last_model_path):
             print(f"Loading last trained model from {self.last_model_path}")
             self.model = YOLO(self.last_model_path)
@@ -29,59 +57,42 @@ class YOLOModel:
             print(f"Loading pre-trained model from {self.model_path}")
             self.model = YOLO(self.model_path)
 
-    def convert_labelme_to_yolo(self, json_folder, output_folder):
-        """
-        Converts LabelMe JSON annotations to YOLO format.
-        :param json_folder: Path to the folder containing JSON annotation files.
-        :param output_folder: Path where the converted YOLO labels will be saved.
-        """
-        os.makedirs(output_folder, exist_ok=True)  # Ensure the output folder exists
-
-        for filename in os.listdir(json_folder):
-            if filename.endswith(".json"):
-                with open(os.path.join(json_folder, filename), 'r') as f:
-                    data = json.load(f)
-                img_w, img_h = data["imageWidth"], data["imageHeight"]
-                txt_filename = os.path.join(output_folder, filename.replace(".json", ".txt"))
-                with open(txt_filename, "w") as txt_file:
-                    for shape in data["shapes"]:
-                        label = 0  # Default class ID
-                        (xmin, ymin), (xmax, ymax) = shape["points"]
-
-                        # Ensure values are within valid bounds
-                        xmin, ymin, xmax, ymax = max(0, xmin), max(0, ymin), max(0, xmax), max(0, ymax)
-
-                        # Convert to YOLO format (normalized values)
-                        x_center = ((xmin + xmax) / 2) / img_w
-                        y_center = ((ymin + ymax) / 2) / img_h
-                        width = (xmax - xmin) / img_w
-                        height = (ymax - ymin) / img_h
-
-                        # Write to file with 6 decimal places
-                        txt_file.write(f"{label} {x_center:.6f} {y_center:.6f} {width:.6f} {height:.6f}\n")
-
     def train_yolo(self, data_yaml="data.yaml", epochs=100, batch_size=10, img_size=800, cache="disk", resume=True):
-        """
-        Trains the YOLO model using the specified dataset.
-        :param data_yaml: Path to the dataset configuration file.
-        :param epochs: Number of training epochs.
-        :param batch_size: Batch size for training.
-        :param img_size: Image size for training.
-        :param cache: Caching strategy ('ram', 'disk', or False).
-        :param resume: Whether to resume training from the last checkpoint.
-        """
         if resume and os.path.exists(self.last_model_path):
             print("Resuming training...")
             self.model = YOLO(self.last_model_path)
 
-        self.model.train(
-            data=data_yaml,
-            epochs=epochs,
-            batch=batch_size,
-            imgsz=img_size,
-            cache=cache,
-            resume=resume
-        )
+        kfold = KFold(n_splits=5, shuffle=True, random_state=42)
+        for fold, (train_idx, val_idx) in enumerate(kfold.split(range(epochs))):
+            print(f"Training fold {fold + 1}/{kfold.get_n_splits()}")
+
+            early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')  # Set metric to 'mAP'
+
+            # Define learning rate scheduler (Reduce LR on Plateau)
+            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3,
+                                                             verbose=True)
+
+            self.model.train(
+                data=data_yaml,
+                epochs=epochs,
+                batch=batch_size,
+                imgsz=img_size,
+                cache=cache,
+                resume=resume
+            )
+
+            val_metrics = self.model.val()
+
+            # גישה ל- mAP מתוך ה-results_dict
+            mAP50_95 = val_metrics.box.map
+
+            print(f"Validation mAP50-95: {mAP50_95}")
+            early_stopping(mAP50_95)
+
+            if early_stopping.early_stop:
+                print(f"Early stopping triggered at fold {fold + 1}. Stopping training.")
+                break
+
         print(f"Training complete. Best model saved at: {self.trained_model_path}")
 
         # Compare models and keep the best one
