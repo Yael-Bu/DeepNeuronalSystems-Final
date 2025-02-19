@@ -35,12 +35,7 @@ class EarlyStopping:
             self.early_stop = True
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11n.pt", trained_model_dir="runs/detect/train11/weights"):
-        """
-        Initializes the YOLO model.
-        :param model_path: Path to the pre-trained YOLO model.
-        :param trained_model_dir: Directory where trained weights are stored.
-        """
+    def __init__(self, model_path="yolov11n.pt", trained_model_dir="runs/detect/train29/weights"):
         self.model_path = model_path
         self.trained_model_dir = trained_model_dir
         self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
@@ -100,8 +95,8 @@ class YOLOModel:
             if os.path.exists(self.last_model_path):
                 best_model = YOLO(self.trained_model_path)
                 last_model = YOLO(self.last_model_path)
-                best_mAP = best_model.val()["metrics/mAP50-95(B)"]
-                last_mAP = last_model.val()["metrics/mAP50-95(B)"]
+                best_mAP = best_model.val().box.map
+                last_mAP = last_model.val().box.map
                 if best_mAP > last_mAP:
                     os.rename(self.trained_model_path, self.last_model_path)
                     print("Updated last.pt with better model.")
