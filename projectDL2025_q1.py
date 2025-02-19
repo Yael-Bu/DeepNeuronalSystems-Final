@@ -1,10 +1,10 @@
 import os
-import json
 import torch
 import cv2
 import numpy as np
 import pandas as pd
 from ultralytics import YOLO
+import torch.optim as optim
 from sklearn.model_selection import KFold
 
 # EarlyStopping class
@@ -57,15 +57,14 @@ class YOLOModel:
             print("Resuming training...")
             self.model = YOLO(self.last_model_path)
 
+        optimizer = optim.Adam(self.model.parameters(), lr=0.001, betas=(0.9, 0.999))
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
+
         kfold = KFold(n_splits=5, shuffle=True, random_state=42)
         for fold, (train_idx, val_idx) in enumerate(kfold.split(range(epochs))):
             print(f"Training fold {fold + 1}/{kfold.get_n_splits()}")
 
-            early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')  # Set metric to 'mAP'
-
-            # Define learning rate scheduler (Reduce LR on Plateau)
-            scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3,
-                                                             verbose=True)
+            early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')
 
             self.model.train(
                 data=data_yaml,
@@ -73,15 +72,15 @@ class YOLOModel:
                 batch=batch_size,
                 imgsz=img_size,
                 cache=cache,
-                resume=resume
+                resume=resume,
+                optimizer="Adam"  # שימוש באדם
             )
 
             val_metrics = self.model.val()
-
-            # גישה ל- mAP מתוך ה-results_dict
             mAP50_95 = val_metrics.box.map
 
             print(f"Validation mAP50-95: {mAP50_95}")
+            scheduler.step(mAP50_95)  # עדכון LR
             early_stopping(mAP50_95)
 
             if early_stopping.early_stop:
