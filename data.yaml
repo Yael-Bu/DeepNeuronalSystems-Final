@@ -1,6 +1,16 @@
-train: ../DataSet/train/images
-val: ../DataSet/train/images
-test: ../DataSet/test
+train: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/train/images
+val: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/train/images
+test: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/test
+augment: true  # Enable augmentation
 
 nc: 1
-names: ["scroll"]
+names: ['scroll']
+
+hyp:
+  mixup: 0.2  # 20% MixUp image blending
+  mosaic: 1.0  # Mosaic enabled 100% of the time
+  hsv_h: 0.015  # Hue adjustment
+  hsv_s: 0.7  # Saturation adjustment
+  hsv_v: 0.4  # Value (brightness) adjustment
+  fliplr: 0.5  # Horizontal flip
+  flipud: 0.5  # Vertical flip
