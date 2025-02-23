@@ -1,5 +1,5 @@
-train: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/train/images
-val: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/train/images
+train: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/trainData
+val: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/valData
 test: /Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/test
 augment: true  # Enable augmentation
 

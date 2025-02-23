@@ -1,4 +1,5 @@
 import os
+import shutil
 import cv2
 import torch
 import numpy as np
@@ -39,7 +40,7 @@ class EarlyStopping:
 
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11s.pt", trained_model_dir="runs/detect/train31/weights"):
+    def __init__(self, model_path="yolov11s.pt", trained_model_dir="runs/detect/train39/weights"):
         self.model_path = model_path
         self.trained_model_dir = trained_model_dir
         self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
@@ -48,7 +49,7 @@ class YOLOModel:
         if os.path.exists(self.trained_model_path) and os.path.exists(self.last_model_path):
             best_model = YOLO(self.trained_model_path)
             last_model = YOLO(self.last_model_path)
-            self.model = best_model if best_model.val().box.map > last_model.val().box.map else last_model
+            self.model = best_model #if best_model.val().box.map > last_model.val().box.map else last_model
         elif os.path.exists(self.last_model_path):
             self.model = YOLO(self.last_model_path)
         elif os.path.exists(self.trained_model_path):
@@ -61,15 +62,75 @@ class YOLOModel:
             config = yaml.safe_load(file)
         return config
 
-    def train_yolo(self, data_yaml="data.yaml", epochs=10, batch_size=10, img_size=800, cache="disk", resume=True):
-        optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, betas=(0.9, 0.999), weight_decay=1e-4)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, min_lr=1e-7,
-                                                         verbose=True)
-
-        # Load YAML configuration
+    def split_images_and_annotations(self, train_data, val_data, data_yaml="data.yaml"):
+        """
+        Copy images and their corresponding annotation files into train and validation directories.
+        :param train_data: List of paths to training images.
+        :param val_data: List of paths to validation images.
+        :param data_yaml: Path to the YAML file containing dataset configuration.
+        """
+                # Load YAML configuration
         config = self.load_yaml(data_yaml)
         # Get image paths from the directories defined in the YAML
         train_dir = config['train']
+        val_dir =  config['val']
+        train_images_dir = os.path.join(train_dir, 'images')
+        val_images_dir = os.path.join(val_dir, 'images')
+        train_annotations_dir = os.path.join(train_dir, 'labels')  # Assuming 'labels' for annotations
+        val_annotations_dir = os.path.join(val_dir, 'labels')
+
+
+        # Create the directories if they don't exist
+        os.makedirs(train_dir, exist_ok=True)
+        os.makedirs(val_dir, exist_ok=True)
+        os.makedirs(train_images_dir, exist_ok=True)
+        os.makedirs(val_images_dir, exist_ok=True)
+        os.makedirs(train_annotations_dir, exist_ok=True)
+        os.makedirs(val_annotations_dir, exist_ok=True)
+
+        # Delete all files in the existing directories (if any)
+        for f in os.listdir(train_images_dir):
+            file_path = os.path.join(train_images_dir, f)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        for f in os.listdir(val_images_dir):
+            file_path = os.path.join(val_images_dir, f)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        # Delete annotation files (if any)
+        for f in os.listdir(train_annotations_dir):
+            file_path = os.path.join(train_annotations_dir, f)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        for f in os.listdir(val_annotations_dir):
+            file_path = os.path.join(val_annotations_dir, f)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+
+        # לCopy the images to the train directory
+        for image_path in train_data:
+            shutil.copy(image_path, os.path.join(train_images_dir, os.path.basename(image_path)))
+            annotation_path = image_path.replace('images', 'labels').replace('.jpg', '.txt').replace('.png', '.txt')
+            if os.path.exists(annotation_path):
+                shutil.copy(annotation_path, os.path.join(train_annotations_dir, os.path.basename(annotation_path)))
+
+        # Copy the images to the validation directory
+        for image_path in val_data:
+            shutil.copy(image_path, os.path.join(val_images_dir, os.path.basename(image_path)))
+            annotation_path = image_path.replace('images', 'labels').replace('.jpg', '.txt').replace('.png', '.txt')
+            if os.path.exists(annotation_path):
+                shutil.copy(annotation_path, os.path.join(val_annotations_dir, os.path.basename(annotation_path)))
+
+        print(f"Images and annotations have been split into {train_dir}, {train_annotations_dir} and {val_dir}, {val_annotations_dir}.")
+
+
+    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml",epochs=10, batch_size=10, img_size=800, cache="disk", resume=True):
+        optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, betas=(0.9, 0.999), weight_decay=1e-4)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, min_lr=1e-7,
+                                                         verbose=True)
 
         # Collect image files from the directories (assuming all files are images)
         train_images = [os.path.join(train_dir, fname) for fname in os.listdir(train_dir) if
@@ -78,7 +139,7 @@ class YOLOModel:
 
         dataset_size = len(train_images) # Now the size is based on the actual number of images
         indices = np.arange(dataset_size)
-        train_loss, val_map = [], []
+        train_map, val_map = [], []
 
         # Define the augmentation configurations
         augment_config = {
@@ -99,18 +160,22 @@ class YOLOModel:
             # Prepare train and validation datasets based on the indices
             train_data = [train_images[i] for i in train_idx]  # Access images in the 'train' section
             val_data = [train_images[i] for i in val_idx]  # Access images in the 'val' section
+            self.split_images_and_annotations(train_data, val_data)
 
             early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')
 
             # Train model with augmentations as hyp (hyperparameters)
-            self.model.train(data=data_yaml, epochs=epochs, batch=batch_size, imgsz=img_size, cache=cache,
+            train_metrics = self.model.train(data=data_yaml, epochs=epochs, batch=batch_size, imgsz=img_size, cache=cache,
                              resume=resume, optimizer="AdamW", augment=True)
+            train_metrics_mAP50_95 = train_metrics.results_dict['metrics/mAP50-95(B)']
+            train_map.append(train_metrics_mAP50_95)
 
             # Validate and compute mAP
             val_metrics = self.model.val()
             mAP50_95 = val_metrics.box.map
-            train_loss.append(val_metrics.loss.box)
             val_map.append(mAP50_95)
+
+
 
             print(f"Validation mAP50-95: {mAP50_95}")
             scheduler.step(mAP50_95)
@@ -121,7 +186,7 @@ class YOLOModel:
                 break
 
         # Plot the metrics after training
-        self.plot_metrics(train_loss, val_map)
+        self.plot_metrics(train_map, val_map)
 
     def plot_metrics(self, train_loss, val_map):
         plt.figure(figsize=(10, 5))
@@ -139,6 +204,7 @@ class YOLOModel:
         plt.title('Validation mAP')
         plt.legend()
 
+        os.makedirs("results/plots", exist_ok=True)
         plt.savefig("results/plots/training_metrics.png")
         plt.show()
 
@@ -170,11 +236,8 @@ class YOLOModel:
 
 
 if __name__ == "__main__":
-    train_dir = '/Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/train/images'
-    print("Train directory exists:", os.path.isdir(train_dir))  # Should print True if the directory exists
-
     yolo_model = YOLOModel()
-    yolo_model.train_yolo(resume=False)
+    yolo_model.train_yolo(resume=True)
     test_dir = "DataSet/test"
     results_dir = "DataSet/test/results"
     os.makedirs(results_dir, exist_ok=True)
