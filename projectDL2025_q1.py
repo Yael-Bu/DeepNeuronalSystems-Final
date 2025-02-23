@@ -4,7 +4,6 @@ import cv2
 import torch
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 from ultralytics import YOLO
 import torch.optim as optim
 from sklearn.model_selection import KFold
@@ -40,20 +39,16 @@ class EarlyStopping:
 
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11s.pt", trained_model_dir="runs/detect/train39/weights"):
+    def __init__(self, model_path="yolov11s.pt", trained_model_dir="runs/detect/train43/weights"):
         self.model_path = model_path
         self.trained_model_dir = trained_model_dir
         self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
         self.last_model_path = os.path.join(trained_model_dir, "last.pt")
 
-        if os.path.exists(self.trained_model_path) and os.path.exists(self.last_model_path):
-            best_model = YOLO(self.trained_model_path)
-            last_model = YOLO(self.last_model_path)
-            self.model = best_model #if best_model.val().box.map > last_model.val().box.map else last_model
+        if os.path.exists(self.trained_model_path):
+            self.model = YOLO(self.trained_model_path)
         elif os.path.exists(self.last_model_path):
             self.model = YOLO(self.last_model_path)
-        elif os.path.exists(self.trained_model_path):
-            self.model = YOLO(self.trained_model_path)
         else:
             self.model = YOLO(model_path)
 
@@ -127,7 +122,7 @@ class YOLOModel:
         print(f"Images and annotations have been split into {train_dir}, {train_annotations_dir} and {val_dir}, {val_annotations_dir}.")
 
 
-    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml",epochs=10, batch_size=10, img_size=800, cache="disk", resume=True):
+    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml",epochs=50, batch_size=10, img_size=800, cache="disk", resume=False):
         optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, betas=(0.9, 0.999), weight_decay=1e-4)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, min_lr=1e-7,
                                                          verbose=True)
@@ -139,7 +134,6 @@ class YOLOModel:
 
         dataset_size = len(train_images) # Now the size is based on the actual number of images
         indices = np.arange(dataset_size)
-        train_map, val_map = [], []
 
         # Define the augmentation configurations
         augment_config = {
@@ -166,47 +160,20 @@ class YOLOModel:
 
             # Train model with augmentations as hyp (hyperparameters)
             train_metrics = self.model.train(data=data_yaml, epochs=epochs, batch=batch_size, imgsz=img_size, cache=cache,
-                             resume=resume, optimizer="AdamW", augment=True)
-            train_metrics_mAP50_95 = train_metrics.results_dict['metrics/mAP50-95(B)']
-            train_map.append(train_metrics_mAP50_95)
+                             resume=resume, optimizer="AdamW", augment=False, verbose=True)
+            print(f"Train Results: {train_metrics.results_dict}")
 
             # Validate and compute mAP
             val_metrics = self.model.val()
             mAP50_95 = val_metrics.box.map
-            val_map.append(mAP50_95)
-
-
-
             print(f"Validation mAP50-95: {mAP50_95}")
+
             scheduler.step(mAP50_95)
-            early_stopping(mAP50_95)
+            early_stopping(val_metrics.box.map)
 
             if early_stopping.early_stop:
-                print(f"Early stopping triggered at fold {fold + 1}.")
+                print(f"Early stopping at fold {fold + 1}")
                 break
-
-        # Plot the metrics after training
-        self.plot_metrics(train_map, val_map)
-
-    def plot_metrics(self, train_loss, val_map):
-        plt.figure(figsize=(10, 5))
-        plt.subplot(1, 2, 1)
-        plt.plot(train_loss, label='Train Loss', color='blue')
-        plt.xlabel('Epochs')
-        plt.ylabel('Loss')
-        plt.title('Training Loss')
-        plt.legend()
-
-        plt.subplot(1, 2, 2)
-        plt.plot(val_map, label='Validation mAP', color='red')
-        plt.xlabel('Epochs')
-        plt.ylabel('mAP')
-        plt.title('Validation mAP')
-        plt.legend()
-
-        os.makedirs("results/plots", exist_ok=True)
-        plt.savefig("results/plots/training_metrics.png")
-        plt.show()
 
     def predict_process_bounding_boxes(self, image_path, output_csv, conf_threshold=0.4, iou_threshold=0.5,
                                        use_tta=True):
@@ -237,7 +204,7 @@ class YOLOModel:
 
 if __name__ == "__main__":
     yolo_model = YOLOModel()
-    yolo_model.train_yolo(resume=True)
+    yolo_model.train_yolo(resume=False)
     test_dir = "DataSet/test"
     results_dir = "DataSet/test/results"
     os.makedirs(results_dir, exist_ok=True)
