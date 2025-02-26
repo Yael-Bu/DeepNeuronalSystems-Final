@@ -9,10 +9,8 @@ import pandas as pd
 import numpy as np
 from ultralytics import YOLO
 import torch.optim as optim
-from sklearn.model_selection import KFold, StratifiedKFold
-import yaml
-import csv
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import yaml
 
 # EarlyStopping class
 class EarlyStopping:
@@ -123,179 +121,7 @@ class YOLOModel:
 
         print(f"Images and annotations have been split into {train_dir}, {train_annotations_dir} and {val_dir}, {val_annotations_dir}.")
 
-    def get_latest_train_folder(self, base_directory, prefix):
-        # List all subdirectories in the base directory
-        subdirectories = [d for d in os.listdir(base_directory) if
-                          os.path.isdir(os.path.join(base_directory, d)) and d.startswith(prefix)]
-
-        # Sort subdirectories by creation time in descending order
-        subdirectories.sort(key=lambda d: os.path.getctime(os.path.join(base_directory, d)), reverse=True)
-
-        # Iterate through the sorted subdirectories
-        for subdir in subdirectories:
-            subdir_path = os.path.join(base_directory, subdir)
-            results_file = os.path.join(subdir_path, "results.csv")
-
-            # Check if the results.csv file exists
-            if os.path.isfile(results_file):
-                return subdir_path  # Return the path of the first subdirectory containing results.csv
-
-        return None  # Return None if no results.csv file is found
-
-    def save_results(self, fold, epoch, filename="training_results.csv"):
-        # Find the latest training folder dynamically
-        combined_path = self.base_directory + self.prefix
-        save_results_file = os.path.join(combined_path, "training_results.csv")
-
-
-        # Check if the results file exists
-
-        results_folder = self.get_latest_train_folder(self.base_directory, self.prefix)
-        results_file = os.path.join(results_folder, "results.csv")
-        if not os.path.isfile(results_file):
-            print(f"Results file not found: {results_file}")
-            return
-
-        # Read the results.csv file
-        df = pd.read_csv(results_file)
-
-        # Overwrite the 'Epoch' column with the new value
-        df['epoch'] = epoch
-
-        # Add the 'Fold' column
-        df.insert(0, "Fold", fold)
-
-        # Check if the main results file already exists
-        file_exists = os.path.isfile(save_results_file)
-
-        # Write to the main results file
-        with open(save_results_file, "a", newline="") as f:
-            writer = csv.writer(f)
-
-            # Write header if the file does not exist
-            if not file_exists:
-                writer.writerow(["Fold", "Epoch", "Time", "Train Box Loss", "Train CLS Loss", "Train DFL Loss",
-                                 "Precision", "Recall", "mAP50", "mAP50-95",
-                                 "Val Box Loss", "Val CLS Loss", "Val DFL Loss", "LR PG0", "LR PG1", "LR PG2"])
-
-            # Write each row from the dataframe
-            for _, row in df.iterrows():
-                writer.writerow(row)
-
-        print(f"Results from {results_file} added to {save_results_file} with fold {fold}.")
-
-    def adaptive_hyperparams(self, fold, base_lr=0.0005, min_lr=1e-7, weight_decay=1e-4):
-        # Reduce learning rate and weight decay every 2 folds to improve convergence
-        lr = base_lr * (0.8 ** (fold // 2))
-        lr = max(lr, min_lr)
-
-        return {
-            "lr": lr,
-            "weight_decay": weight_decay * (0.8 ** (fold // 2))  # Adjust weight decay accordingly
-        }
-
-    def get_labels_from_annotations(self, annotation_paths):
-        """
-        Extract class labels from annotation files.
-        Assumes annotation files are in YOLO format (class x_center y_center width height).
-        """
-        labels = []
-        for path in annotation_paths:
-            with open(path, "r") as f:
-                # Extract class labels from annotation
-                image_labels = [int(line.split()[0]) for line in f.readlines()]
-            labels.append(image_labels)
-        return labels
-
-    def perform_kfold(self, train_images, annotations, k=5):
-        """Perform K-fold cross-validation using class labels."""
-        dataset_size = len(train_images)
-
-        # Extract labels from the annotations
-        labels = self.get_labels_from_annotations(annotations)
-
-        # Flatten list of labels to ensure a single class label per image
-        # (if multiple labels exist, choose the most frequent class)
-        flattened_labels = [max(set(label_list), key=label_list.count) for label_list in labels]
-
-        indices = np.arange(dataset_size)
-        kfold = StratifiedKFold(n_splits=k, shuffle=True, random_state=42)
-
-        # Generate the splits based on the flattened class labels
-        return kfold.split(indices, flattened_labels)
-
-    def train_fold(self, fold, train_data, val_data, data_yaml, epochs=5, batch_size=30, img_size=800, cache="disk", resume=False):
-        if self.model is None:
-            self.load_model()  # Load the best model before starting each fold
-
-        train_model = self.model
-        early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')
-
-        # Define augmentation configurations
-        augment_config = {
-            'mixup': 0.2,  # 20% MixUp image blending
-            'mosaic': 1.0,  # Mosaic enabled 100% of the time
-            'hsv_h': 0.015,  # Hue adjustment
-            'hsv_s': 0.7,  # Saturation adjustment
-            'hsv_v': 0.4,  # Value (brightness) adjustment
-            'fliplr': 0.5,  # Horizontal flip
-            'flipud': 0.5  # Vertical flip
-        }
-
-        hyperparams = self.adaptive_hyperparams(fold)
-        lr = hyperparams["lr"]
-        weight_decay = hyperparams["weight_decay"]
-
-        # Create optimizer manually
-        optimizer = optim.AdamW(train_model.parameters(), lr=lr, weight_decay=weight_decay)
-
-        # Create a learning rate scheduler
-        scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5, verbose=True)
-
-        # Train the model manually without passing optimizer directly into train method
-        for epoch in range(epochs):
-            # Training step
-            train_metrics = train_model.train(
-                data=data_yaml,
-                epochs=1,  # Train for just 1 epoch at a time
-                batch=batch_size,
-                imgsz=img_size,
-                cache=cache,
-                resume=False,
-                optimizer='auto',  # Let the model handle the optimizer string internally
-                lr0=lr,  # Set learning rate
-                lrf=0.5,  # Learning rate reduction factor
-                momentum=0.9,
-                weight_decay=weight_decay,
-                augment=True,  # Enable augmentations
-                mixup=augment_config['mixup'],
-                mosaic=augment_config['mosaic'],
-                hsv_h=augment_config['hsv_h'],
-                hsv_s=augment_config['hsv_s'],
-                hsv_v=augment_config['hsv_v'],
-                fliplr=augment_config['fliplr'],
-                flipud=augment_config['flipud'],
-                verbose=True
-            )
-
-            # Validation step
-            val_metrics = train_model.val()
-
-            # Step the scheduler with the validation loss (or another metric)
-            scheduler.step(val_metrics.box.map75)  # Assuming val_metrics.box.maps is the validation loss
-
-            # Save results and check early stopping
-            self.save_results(fold, epoch)
-
-            mAP50_95 = val_metrics.box.map
-            early_stopping(mAP50_95)
-
-            if early_stopping.early_stop:
-                print("Early stopping triggered.")
-                #return False
-        return True
-
-    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml", epochs=20, batch_size=10,
+    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml", epochs=50, batch_size=10,
                    img_size=800, cache="disk"):
         train_images = [os.path.join(train_dir, fname) for fname in os.listdir(train_dir) if
                         fname.endswith(('.jpg', '.png'))]
@@ -305,17 +131,39 @@ class YOLOModel:
         resume_training = os.path.exists(self.trained_model_path) or os.path.exists(self.last_model_path)
         self.load_model()
 
-        for fold, (train_idx, val_idx) in enumerate(self.perform_kfold(train_images, annotation_paths)):
-            print(f"Training fold {fold + 1} (Resume: {resume_training})")
-            train_data = [train_images[i] for i in train_idx]
-            val_data = [train_images[i] for i in val_idx]
+        # Split data for training and validation (remove K-fold)
+        train_data = train_images[:int(len(train_images) * 0.8)]  # 80% for training
+        val_data = train_images[int(len(train_images) * 0.8):]  # 20% for validation
 
-            # Split images and annotations for each fold
-            self.split_images_and_annotations(train_data, val_data, data_yaml)
+        # Split images and annotations for each set
+        self.split_images_and_annotations(train_data, val_data, data_yaml)
 
-            if not self.train_fold(fold + 1, train_data, val_data, data_yaml, epochs, batch_size, img_size, cache, resume_training):
-                print(f"Stopping training at fold {fold + 1} due to early stopping.")
-                break
+        # Define early stopping
+        early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')
+
+        # Create optimizer manually
+        optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-4)
+
+        # Create a learning rate scheduler
+        scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5, verbose=True)
+
+        train_metrics = self.model.train(
+            data=data_yaml,
+            epochs=epochs,
+            batch=batch_size,
+            imgsz=img_size,
+            cache=cache,
+            resume=False,
+            optimizer='auto',
+            lr0=0.0005,
+            lrf=0.5,
+            momentum=0.9,
+            weight_decay=1e-4,
+            augment=True,
+            verbose=True
+        )
+
+        print("Training finished!")
 
 
     def predict_process_bounding_boxes(self, image_path, output_csv, conf_threshold=0.4, iou_threshold=0.5,
