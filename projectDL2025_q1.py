@@ -1,16 +1,13 @@
 import os
 import shutil
 import cv2
-import json
 import torch
-import glob
-import csv
+import yaml
 import pandas as pd
 import numpy as np
 from ultralytics import YOLO
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
-import yaml
 
 # EarlyStopping class
 class EarlyStopping:
@@ -23,7 +20,8 @@ class EarlyStopping:
         self.metric = metric
 
     def __call__(self, val_metric):
-        improvement = (val_metric < self.best_metric - self.min_delta) if self.metric == 'loss' else (val_metric > self.best_metric + self.min_delta)
+        improvement = (val_metric < self.best_metric - self.min_delta) if self.metric == 'loss' else (
+                    val_metric > self.best_metric + self.min_delta)
 
         if improvement:
             self.best_metric = val_metric
@@ -36,14 +34,11 @@ class EarlyStopping:
 
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11s.pt", trained_model_dir="runs/detect/train60/weights", train_folder=""):
+    def __init__(self, model_path="yolov11s.pt", train_folder="runs/detect/train64"):
         self.model_path = model_path
-        self.trained_model_dir = trained_model_dir
-        self.trained_model_path = os.path.join(trained_model_dir, "best.pt")
-        self.last_model_path = os.path.join(trained_model_dir, "last.pt")
+        self.trained_model_path = os.path.join(train_folder, "weights/best.pt")
+        self.last_model_path = os.path.join(train_folder, "weights/last.pt")
         self.model = None
-        self.base_directory = "runs/detect/"
-        self.prefix = train_folder
 
     def load_model(self):
         if os.path.exists(self.trained_model_path):
@@ -143,35 +138,45 @@ class YOLOModel:
 
         # Create optimizer manually
         optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-4)
+        scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
 
-        # Create a learning rate scheduler
-        scheduler = ReduceLROnPlateau(optimizer, 'min', patience=2, factor=0.5, verbose=True)
+        best_mAP = 0.0
+        for epoch in range(epochs):
+            train_metrics = self.model.train(
+                data=data_yaml,
+                epochs=epoch,
+                batch=batch_size,
+                imgsz=img_size,
+                cache=cache,
+                resume=False,
+                optimizer='auto',
+                lr0=0.0003,
+                lrf=0.05,
+                momentum=0.9,
+                weight_decay=1e-4,
+                augment=True,
+                verbose=True
+            )
 
-        train_metrics = self.model.train(
-            data=data_yaml,
-            epochs=epochs,
-            batch=batch_size,
-            imgsz=img_size,
-            cache=cache,
-            resume=False,
-            optimizer='auto',
-            lr0=0.0005,
-            lrf=0.5,
-            momentum=0.9,
-            weight_decay=1e-4,
-            augment=True,
-            verbose=True
-        )
+            val_mAP = train_metrics.box.map # להוציא את ה-mAP מהלוגים
+            scheduler.step(val_mAP)
+
+            if val_mAP > best_mAP:
+                best_mAP = val_mAP
+
+            early_stopping(val_mAP)
+            if early_stopping.early_stop:
+                print("Early stopping triggered. Training stopped.")
+                break
 
         print("Training finished!")
 
-
     def predict_process_bounding_boxes(self, image_path, output_csv, conf_threshold=0.4, iou_threshold=0.5,
                                        use_tta=True):
-        if not os.path.exists(self.last_model_path):
+        if not os.path.exists(self.trained_model_path):
             raise FileNotFoundError("❌ Model not found! Train the model first.")
 
-        model = YOLO(self.last_model_path)
+        model = YOLO(self.trained_model_path)
         img = cv2.imread(image_path)
 
         if img is None:
@@ -179,7 +184,6 @@ class YOLOModel:
 
         results = model.predict(img, save=True, conf=conf_threshold, iou=iou_threshold, augment=use_tta)
         data = []
-        h, w, _ = img.shape
 
         for result in results:
             image_name = os.path.basename(image_path)
@@ -195,9 +199,9 @@ class YOLOModel:
 
 
 if __name__ == "__main__":
-    yolo_model = YOLOModel(train_folder="61")
-
+    yolo_model = YOLOModel()
     yolo_model.train_yolo()
+
     test_dir = "DataSet/test"
     results_dir = "DataSet/test/results"
     os.makedirs(results_dir, exist_ok=True)
