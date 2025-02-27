@@ -34,7 +34,7 @@ class EarlyStopping:
 
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11s.pt", train_folder="runs/detect/train65"):
+    def __init__(self, model_path="yolov11s.pt", train_folder="runs/detect/train66"):
         self.model_path = model_path
         self.trained_model_path = os.path.join(train_folder, "weights/best.pt")
         self.last_model_path = os.path.join(train_folder, "weights/last.pt")
@@ -134,7 +134,7 @@ class YOLOModel:
         self.split_images_and_annotations(train_data, val_data, data_yaml)
 
         # Define early stopping
-        early_stopping = EarlyStopping(patience=5, min_delta=0.01, metric='mAP')
+        early_stopping = EarlyStopping(patience=2, min_delta=0.01, metric='mAP')
 
         # Create optimizer manually
         optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-4)
