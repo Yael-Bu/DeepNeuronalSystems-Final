@@ -34,7 +34,7 @@ class EarlyStopping:
 
 
 class YOLOModel:
-    def __init__(self, model_path="yolov11s.pt", train_folder="runs/detect/train64"):
+    def __init__(self, model_path="yolov11s.pt", train_folder="runs/detect/train65"):
         self.model_path = model_path
         self.trained_model_path = os.path.join(train_folder, "weights/best.pt")
         self.last_model_path = os.path.join(train_folder, "weights/last.pt")
@@ -116,8 +116,8 @@ class YOLOModel:
 
         print(f"Images and annotations have been split into {train_dir}, {train_annotations_dir} and {val_dir}, {val_annotations_dir}.")
 
-    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml", epochs=50, batch_size=10,
-                   img_size=800, cache="disk"):
+    def train_yolo(self, train_dir="DataSet/train/images", data_yaml="data.yaml", max_epochs=50, batch_size=10,
+                   img_size=800, cache="disk", step_epochs=5):
         train_images = [os.path.join(train_dir, fname) for fname in os.listdir(train_dir) if
                         fname.endswith(('.jpg', '.png'))]
         annotation_paths = [img.replace('images', 'labels').replace('.jpg', '.txt').replace('.png', '.txt') for img in
@@ -141,14 +141,18 @@ class YOLOModel:
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
 
         best_mAP = 0.0
-        for epoch in range(epochs):
+        total_epochs = 0
+
+        while total_epochs < max_epochs:
+            remaining_epochs = min(step_epochs, max_epochs - total_epochs)  # לא לרוץ מעבר ל-max_epochs
+
             train_metrics = self.model.train(
                 data=data_yaml,
-                epochs=epoch,
+                epochs=remaining_epochs,  # להריץ כל פעם קבוצת epochs קטנה
                 batch=batch_size,
                 imgsz=img_size,
                 cache=cache,
-                resume=False,
+                resume=False,  # להמשיך מאיפה שנשארנו
                 optimizer='auto',
                 lr0=0.0003,
                 lrf=0.05,
@@ -158,18 +162,19 @@ class YOLOModel:
                 verbose=True
             )
 
-            val_mAP = train_metrics.box.map # להוציא את ה-mAP מהלוגים
+            val_mAP = train_metrics.box.map  # הוצאת המטריקות
+            print(f"Validation mAP: {val_mAP}")
+
             scheduler.step(val_mAP)
-
-            if val_mAP > best_mAP:
-                best_mAP = val_mAP
-
             early_stopping(val_mAP)
+
             if early_stopping.early_stop:
-                print("Early stopping triggered. Training stopped.")
+                print(f"Early stopping triggered at epoch {total_epochs + remaining_epochs}. Training stopped.")
                 break
 
-        print("Training finished!")
+            total_epochs += remaining_epochs
+
+        print(f"Training finished after {total_epochs} epochs!")
 
     def predict_process_bounding_boxes(self, image_path, output_csv, conf_threshold=0.4, iou_threshold=0.5,
                                        use_tta=True):
