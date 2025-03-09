@@ -1,13 +1,12 @@
 import os
 import shutil
 import cv2
-import torch
 import yaml
 import pandas as pd
-import numpy as np
 from ultralytics import YOLO
 import torch.optim as optim
 from torch.optim.lr_scheduler import ReduceLROnPlateau
+import json
 
 # EarlyStopping class
 class EarlyStopping:
@@ -120,10 +119,7 @@ class YOLOModel:
                    img_size=800, cache="disk", step_epochs=5):
         train_images = [os.path.join(train_dir, fname) for fname in os.listdir(train_dir) if
                         fname.endswith(('.jpg', '.png'))]
-        annotation_paths = [img.replace('images', 'labels').replace('.jpg', '.txt').replace('.png', '.txt') for img in
-                            train_images]
 
-        resume_training = os.path.exists(self.trained_model_path) or os.path.exists(self.last_model_path)
         self.load_model()
 
         # Split data for training and validation (remove K-fold)
@@ -140,7 +136,6 @@ class YOLOModel:
         optimizer = optim.AdamW(self.model.parameters(), lr=0.0005, weight_decay=1e-4)
         scheduler = ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=3, verbose=True)
 
-        best_mAP = 0.0
         total_epochs = 0
 
         while total_epochs < max_epochs:
@@ -176,45 +171,84 @@ class YOLOModel:
 
         print(f"Training finished after {total_epochs} epochs!")
 
-    def predict_process_bounding_boxes(self, image_path, output_csv, conf_threshold=0.4, iou_threshold=0.5,
-                                       use_tta=True):
-        if not os.path.exists(self.trained_model_path):
-            raise FileNotFoundError("❌ Model not found! Train the model first.")
 
-        model = YOLO(self.trained_model_path)
+def process_detailed_bounding_boxes(image_paths: list[str], output_csv: str, model_path = "best_p2.pt",  conf_threshold=0.4, iou_threshold=0.35) -> list[str]:
+    """
+    Processes a list of image file paths to detect detailed bounding boxes
+    for both large and small scroll segments.
+    Saves the bounding box data to a CSV file.
+
+    Args:
+        image_paths (list[str]): List of full paths to the input images.
+        output_csv (str): Path to the output CSV file.
+        conf_threshold
+        iou_threshold
+
+    Returns:
+        list[str]: List of full paths (path + file name) of processed images.
+    """
+
+    if not os.path.exists(model_path):
+        raise FileNotFoundError("❌ Model not found! Train the model first.")
+
+    model = YOLO(model_path)
+    processed_images = []
+    data = []
+
+    for image_path in image_paths:
         img = cv2.imread(image_path)
-
         if img is None:
             raise ValueError(f"❌ Failed to read image: {image_path}")
 
-        results = model.predict(img, save=True, conf=conf_threshold, iou=iou_threshold, augment=use_tta)
-        data = []
+        results = model.predict(img, conf=conf_threshold, iou=iou_threshold)
+        image_name = os.path.basename(image_path)
 
-        for result in results:
-            image_name = os.path.basename(image_path)
-            for i, box in enumerate(result.boxes.xyxy.cpu().numpy()):
-                xmin, ymin, xmax, ymax = map(int, box)
-                xmin, ymin, xmax, ymax = max(0, xmin), max(0, ymin), max(0, xmax), max(0, ymax)
-                data.append([image_name, i + 1, xmin, ymin, xmax, ymax, -1])
+        # Load ground truth bounding boxes from JSON
+        json_path = image_path.replace('images', 'annotations').replace('.jpg', '.json').replace('.png', '.json')
+        ground_truth_boxes = []
+        if os.path.exists(json_path):
+            with open(json_path, 'r') as file:
+                ground_truth = json.load(file).get("shapes", [])
+            ground_truth_boxes = [
+                [int(shape["points"][0][0]), int(shape["points"][0][1]),
+                 int(shape["points"][1][0]), int(shape["points"][1][1])]
+                for shape in ground_truth if len(shape["points"]) == 2
+            ]
 
-        if data:
-            os.makedirs(os.path.dirname(output_csv), exist_ok=True)  # ✅ מוודאים שהתיקייה קיימת
-            df = pd.DataFrame(data, columns=["image_name", "scroll_number", "xmin", "ymin", "xmax", "ymax", "iou"])
-            df.to_csv(output_csv, index=False)
+        predicted_boxes_sorted = sorted([list(map(int, box)) for result in results for box in result.boxes.xyxy.cpu().numpy()], key=lambda box: box[0])
+
+        # Process bounding boxes
+        for i, predicted_box in enumerate(predicted_boxes_sorted):
+            xmin, ymin, xmax, ymax = predicted_box
+            data.append([image_name, i + 1, xmin, ymin, xmax, ymax])
+
+        # Add ground truth bounding boxes
+        #for i, gt_box in enumerate(ground_truth_boxes):
+            #xmin, ymin, xmax, ymax = gt_box
+            #data.append([image_name, f"GT-{i + 1}", xmin, ymin, xmax, ymax])
+
+        processed_images.append(image_path)
+
+    if data:
+        os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+        df = pd.DataFrame(data, columns=["image_name", "scroll_number", "xmin", "ymin", "xmax", "ymax"])
+        df.to_csv(output_csv, index=False)
+
+    return processed_images
 
 
 if __name__ == "__main__":
-    yolo_model = YOLOModel()
-    yolo_model.train_yolo()
+    #yolo_model = YOLOModel()
+   # yolo_model.train_yolo()
 
-    test_dir = "DataSet/test"
-    results_dir = "DataSet/test/results"
+    test_dir = "DataSet/train/images"
+    results_dir = "DataSet/train/results"
     os.makedirs(results_dir, exist_ok=True)
 
-    for test_image in os.listdir(test_dir):
-        if test_image.endswith(".jpg"):
-            yolo_model.predict_process_bounding_boxes(
-                os.path.join(test_dir, test_image),
-                os.path.join(results_dir, f"{test_image}.csv"),
-                conf_threshold=0.4, iou_threshold=0.35
-            )
+    image_paths = [os.path.join(test_dir, img) for img in os.listdir(test_dir) if img.endswith(".jpg")]
+    output_csv = os.path.join(results_dir, "training_bounding_boxes.csv")
+
+    if image_paths:
+        images = process_detailed_bounding_boxes(image_paths, output_csv, conf_threshold=0.4, iou_threshold=0.35)
+        print(f"images are: {images}")
+
