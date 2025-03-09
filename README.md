@@ -178,7 +178,7 @@ To run the `process_detailed_bounding_boxes` function, follow these steps:
    This will process each image in the list, detect bounding boxes, and save the results to the `training_bounding_boxes.csv` file.
 
 ---
-## *Function Parameters*
+### *Function Parameters*
 
 ### **`process_detailed_bounding_boxes(image_paths, output_csv, conf_threshold=0.4, iou_threshold=0.35)`**
 
@@ -193,7 +193,7 @@ To run the `process_detailed_bounding_boxes` function, follow these steps:
   - The function returns a list of processed images along with their respective bounding box data.
 
 ---
-## *. Example Usage*
+### *Example Usage*
 
 To run the bounding box detection on your dataset, ensure that the `test_dir` and `results_dir` paths are set correctly, and then execute the script.
 
