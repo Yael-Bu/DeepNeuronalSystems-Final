@@ -325,7 +325,10 @@ def main():
     os.makedirs(output_dir, exist_ok=True)
 
     # Process all images in the specified directory
-    process_all_images_in_directory(images_dir, output_dir, model_path, file_name="test_results")
+    #process_all_images_in_directory(images_dir, output_dir, model_path, file_name="test_results")
+
+    one_image_path = "/Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/test/images/M42934-1-E.jpg"
+    predict_process_bounding_boxes(one_image_path, "/Users/administrator/Documents/Python/DeepNeuronalSystems-Final/DataSet/test/results/test.csv", model_path = "best.pt")
 
 if __name__ == "__main__":
     main()
